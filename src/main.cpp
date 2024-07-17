@@ -1,5 +1,5 @@
 /**
- * @file bme680_battery_monitor_xiao_esp32c3.ino
+ * @file bmain.cpp
  * @brief BME680 Environmental Sensor and Battery Voltage Monitor for XIAO ESP32C3
  *
  * This script reads data from a BME680 environmental sensor using the BSEC2 library,
@@ -16,6 +16,8 @@
  *       Ensure proper hardware setup before use.
  */
 
+#include <Arduino.h>
+#include <Wire.h>
 #include <bsec2.h>
 
 #define SDA_PIN 20
