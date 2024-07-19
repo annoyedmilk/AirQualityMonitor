@@ -27,6 +27,7 @@
 void checkBsecStatus(Bsec2 bsec);
 void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsec);
 float readBatteryVoltage();
+int mapBatteryPercentage(float voltage);
 
 Bsec2 envSensor;
 
@@ -78,15 +79,6 @@ void loop() {
         checkBsecStatus(envSensor);
     }
 
-    // Read and print battery voltage every 5 seconds
-    static unsigned long lastBatteryReadTime = 0;
-    if (millis() - lastBatteryReadTime > 5000) {
-        float batteryVoltage = readBatteryVoltage();
-        Serial.println("Battery Voltage: " + String(batteryVoltage, 3) + " V");
-        Serial.println("--------------------------------------------");
-        lastBatteryReadTime = millis();
-    }
-
     delay(1000);  // Small delay to prevent tight looping
 }
 
@@ -94,6 +86,9 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
     if (!outputs.nOutputs) {
         return;
     }
+
+    float batteryVoltage = readBatteryVoltage();
+    int batteryPercentage = mapBatteryPercentage(batteryVoltage);
 
     Serial.println("BME680 Sensor Data:");
     Serial.println("Timestamp: " + String((int)(outputs.output[0].time_stamp / INT64_C(1000000))) + " ms");
@@ -145,6 +140,9 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
             break;
         }
     }
+
+    Serial.println("Battery Voltage: " + String(batteryVoltage, 3) + " V");
+    Serial.println("Battery Charge: " + String(batteryPercentage) + " %");
     Serial.println("--------------------------------------------");
 }
 
@@ -168,4 +166,14 @@ float readBatteryVoltage() {
         Vbatt += analogReadMilliVolts(BATT_PIN);
     }
     return 2 * (Vbatt / 16) / 1000.0;  // Apply attenuation ratio 1/2, convert mV to V
+}
+
+int mapBatteryPercentage(float voltage) {
+    if (voltage >= 4.2) {
+        return 100;
+    } else if (voltage <= 3.4) {
+        return 0;
+    } else {
+        return (int)((voltage - 3.4) * 100.0 / (4.2 - 3.4));
+    }
 }
