@@ -1,179 +1,153 @@
 /**
- * @file bmain.cpp
- * @brief BME680 Environmental Sensor and Battery Voltage Monitor for XIAO ESP32C3
+ * @file main.cpp
+ * @brief Simplified BME680 Environmental Sensor and Battery Voltage Monitor for XIAO ESP32C3
  *
  * This script reads data from a BME680 environmental sensor using the BSEC2 library,
- * measures battery voltage, and outputs the results via serial communication.
+ * measures battery voltage, and outputs the results via HomeKit integration.
  * It's designed for use with a Seeed Studio XIAO ESP32C3 microcontroller.
  *
- * @author annoyedmilk
- * @date 17.07.2024
+ * Features:
+ * - Configured for 3.3V operation of BME680
+ * - Sensor readings every second
+ * - Basic error handling and logging
+ *
+ * @date 19.07.2024
  * @version 1.0
- *
- * @copyright Copyright (c) 2024
- *
- * @note This code is configured for a XIAO ESP32C3 with a BME680 sensor and a voltage divider for battery measurement.
- *       Ensure proper hardware setup before use.
  */
 
-#include <Arduino.h>
+#include "HomeSpan.h"
 #include <Wire.h>
 #include <bsec2.h>
+#include "config/Default_H2S_NonH2S/Default_H2S_NonH2S.h"
 
 #define SDA_PIN 20
 #define SCL_PIN 21
 #define BATT_PIN 2
 
+#define UPDATE_INTERVAL 300000 // 5 minutes in milliseconds
+
+Bsec2 envSensor;
+unsigned long lastUpdateTime = 0;
+
 void checkBsecStatus(Bsec2 bsec);
 void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsec);
 float readBatteryVoltage();
-int mapBatteryPercentage(float voltage);
 
-Bsec2 envSensor;
+#include "EnvironmentalSensorService.h"
+#include "BatteryService.h"
+
+EnvironmentalSensor *envSensorService;
+BatteryService *batteryService;
 
 void setup() {
-    Serial.begin(115200);
-    Wire.begin(SDA_PIN, SCL_PIN);
-    pinMode(BATT_PIN, INPUT);
+  Serial.begin(115200);
+  Wire.begin(SDA_PIN, SCL_PIN);
+  pinMode(BATT_PIN, INPUT);
 
-    while (!Serial) delay(10);
+  homeSpan.begin(Category::Sensors, "Annoyedmilk BME680 Air Quality Monitor");
 
-    Serial.println("BME680 and Battery Monitor for XIAO ESP32C3");
-    Serial.println("============================================");
+  new SpanAccessory();
+    new Service::AccessoryInformation();
+      new Characteristic::Identify();
+      new Characteristic::Name("Annoyedmilk BME680 Sensor");
+      new Characteristic::Manufacturer("Annoyedmilk");
+      new Characteristic::SerialNumber("AMB-BME680-001");
+      new Characteristic::Model("Annoyedmilk BME680 AQI");
+      new Characteristic::FirmwareRevision("1.0");
+    
+    envSensorService = new EnvironmentalSensor();
+    batteryService = new BatteryService();
 
-    bsecSensor sensorList[] = {
-        BSEC_OUTPUT_IAQ,
-        BSEC_OUTPUT_STATIC_IAQ,
-        BSEC_OUTPUT_CO2_EQUIVALENT,
-        BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
-        BSEC_OUTPUT_RAW_TEMPERATURE,
-        BSEC_OUTPUT_RAW_PRESSURE,
-        BSEC_OUTPUT_RAW_HUMIDITY,
-        BSEC_OUTPUT_RAW_GAS,
-        BSEC_OUTPUT_STABILIZATION_STATUS,
-        BSEC_OUTPUT_RUN_IN_STATUS,
-        BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
-        BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
-        BSEC_OUTPUT_GAS_PERCENTAGE
-    };
+  if (!envSensor.begin(0x76, Wire)) {
+    checkBsecStatus(envSensor);
+  }
 
-    if (!envSensor.begin(0x76, Wire)) {
-        Serial.println("Failed to initialize BME680, check wiring!");
-        checkBsecStatus(envSensor);
-    }
+  // Load the custom configuration
+  if (!envSensor.setConfig(Default_H2S_NonH2S_config)) {
+    checkBsecStatus(envSensor);
+  }
 
-    if (!envSensor.updateSubscription(sensorList, sizeof(sensorList) / sizeof(sensorList[0]), BSEC_SAMPLE_RATE_LP)) {
-        Serial.println("Failed to update subscription!");
-        checkBsecStatus(envSensor);
-    }
+  bsec_virtual_sensor_t sensorList[] = {
+    BSEC_OUTPUT_IAQ,
+    BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
+    BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
+    BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
+    BSEC_OUTPUT_CO2_EQUIVALENT
+  };
 
-    envSensor.attachCallback(newDataCallback);
+  if (!envSensor.updateSubscription(sensorList, sizeof(sensorList) / sizeof(sensorList[0]), BSEC_SAMPLE_RATE_LP)) {
+    checkBsecStatus(envSensor);
+  }
 
-    Serial.println("BSEC library version " + String(envSensor.version.major) + "." + String(envSensor.version.minor) + "." + String(envSensor.version.major_bugfix) + "." + String(envSensor.version.minor_bugfix));
-    Serial.println("Setup completed, monitoring started.");
-    Serial.println("============================================");
+  envSensor.attachCallback(newDataCallback);
 }
 
 void loop() {
+  homeSpan.poll();
+  
+  unsigned long currentTime = millis();
+  if (currentTime - lastUpdateTime >= UPDATE_INTERVAL) {
     if (!envSensor.run()) {
-        checkBsecStatus(envSensor);
+      checkBsecStatus(envSensor);
     }
-
-    delay(1000);  // Small delay to prevent tight looping
+    lastUpdateTime = currentTime;
+  }
 }
 
 void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsec) {
-    if (!outputs.nOutputs) {
-        return;
+  if (!outputs.nOutputs) return;
+
+  float iaq = 0, vocEquivalent = 0, temperature = 0, humidity = 0, co2Equivalent = 0;
+
+  for (uint8_t i = 0; i < outputs.nOutputs; i++) {
+    const bsecData output = outputs.output[i];
+    switch (output.sensor_id) {
+      case BSEC_OUTPUT_IAQ:
+        iaq = output.signal;
+        break;
+      case BSEC_OUTPUT_BREATH_VOC_EQUIVALENT:
+        vocEquivalent = output.signal;
+        break;
+      case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE:
+        temperature = output.signal;
+        break;
+      case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:
+        humidity = output.signal;
+        break;
+      case BSEC_OUTPUT_CO2_EQUIVALENT:
+        co2Equivalent = output.signal;
+        break;
     }
+  }
 
-    float batteryVoltage = readBatteryVoltage();
-    int batteryPercentage = mapBatteryPercentage(batteryVoltage);
+  envSensorService->updateReadings(iaq, vocEquivalent, temperature, humidity, co2Equivalent);
 
-    Serial.println("BME680 Sensor Data:");
-    Serial.println("Timestamp: " + String((int)(outputs.output[0].time_stamp / INT64_C(1000000))) + " ms");
-
-    for (uint8_t i = 0; i < outputs.nOutputs; i++) {
-        const bsecData output = outputs.output[i];
-        switch (output.sensor_id) {
-        case BSEC_OUTPUT_IAQ:
-            Serial.println("IAQ: " + String(output.signal) + " (Accuracy: " + String((int)output.accuracy) + ")");
-            break;
-        case BSEC_OUTPUT_STATIC_IAQ:
-            Serial.println("Static IAQ: " + String(output.signal) + " (Accuracy: " + String((int)output.accuracy) + ")");
-            break;
-        case BSEC_OUTPUT_CO2_EQUIVALENT:
-            Serial.println("CO2 Equivalent: " + String(output.signal) + " ppm (Accuracy: " + String((int)output.accuracy) + ")");
-            break;
-        case BSEC_OUTPUT_BREATH_VOC_EQUIVALENT:
-            Serial.println("Breath VOC Equivalent: " + String(output.signal) + " ppm");
-            break;
-        case BSEC_OUTPUT_RAW_TEMPERATURE:
-            Serial.println("Raw Temperature: " + String(output.signal) + " °C");
-            break;
-        case BSEC_OUTPUT_RAW_PRESSURE:
-            Serial.println("Pressure: " + String(output.signal / 100.0) + " hPa");
-            break;
-        case BSEC_OUTPUT_RAW_HUMIDITY:
-            Serial.println("Raw Humidity: " + String(output.signal) + " %");
-            break;
-        case BSEC_OUTPUT_RAW_GAS:
-            Serial.println("Gas Resistance: " + String(output.signal / 1000.0) + " kOhms");
-            break;
-        case BSEC_OUTPUT_STABILIZATION_STATUS:
-            Serial.println("Stabilization Status: " + String(output.signal));
-            break;
-        case BSEC_OUTPUT_RUN_IN_STATUS:
-            Serial.println("Run-in Status: " + String(output.signal));
-            break;
-        case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE:
-            Serial.println("Compensated Temperature: " + String(output.signal) + " °C");
-            break;
-        case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:
-            Serial.println("Compensated Humidity: " + String(output.signal) + " %");
-            break;
-        case BSEC_OUTPUT_GAS_PERCENTAGE:
-            Serial.println("Gas Percentage: " + String(output.signal) + " %");
-            break;
-        default:
-            Serial.println("Unknown Sensor ID: " + String(output.sensor_id));
-            break;
-        }
-    }
-
-    Serial.println("Battery Voltage: " + String(batteryVoltage, 3) + " V");
-    Serial.println("Battery Charge: " + String(batteryPercentage) + " %");
-    Serial.println("--------------------------------------------");
+  float batteryVoltage = readBatteryVoltage();
+  batteryService->updateBattery(batteryVoltage);
 }
 
 void checkBsecStatus(Bsec2 bsec) {
-    if (bsec.status < BSEC_OK) {
-        Serial.println("BSEC error code : " + String(bsec.status));
-    } else if (bsec.status > BSEC_OK) {
-        Serial.println("BSEC warning code : " + String(bsec.status));
-    }
+  if (bsec.status < BSEC_OK) {
+    Serial.print("BSEC error code : ");
+    Serial.println(bsec.status);
+  } else if (bsec.status > BSEC_OK) {
+    Serial.print("BSEC warning code : ");
+    Serial.println(bsec.status);
+  }
 
-    if (bsec.sensor.status < BME68X_OK) {
-        Serial.println("BME68X error code : " + String(bsec.sensor.status));
-    } else if (bsec.sensor.status > BME68X_OK) {
-        Serial.println("BME68X warning code : " + String(bsec.sensor.status));
-    }
+  if (bsec.sensor.status < BME68X_OK) {
+    Serial.print("BME680 error code : ");
+    Serial.println(bsec.sensor.status);
+  } else if (bsec.sensor.status > BME68X_OK) {
+    Serial.print("BME680 warning code : ");
+    Serial.println(bsec.sensor.status);
+  }
 }
 
 float readBatteryVoltage() {
-    uint32_t Vbatt = 0;
-    for (int i = 0; i < 16; i++) {
-        Vbatt += analogReadMilliVolts(BATT_PIN);
-    }
-    return 2 * (Vbatt / 16) / 1000.0;  // Apply attenuation ratio 1/2, convert mV to V
-}
-
-int mapBatteryPercentage(float voltage) {
-    if (voltage >= 4.2) {
-        return 100;
-    } else if (voltage <= 3.4) {
-        return 0;
-    } else {
-        return (int)((voltage - 3.4) * 100.0 / (4.2 - 3.4));
-    }
+  uint32_t Vbatt = 0;
+  for (int i = 0; i < 16; i++) {
+    Vbatt += analogReadMilliVolts(BATT_PIN);
+  }
+  return 2 * (Vbatt / 16) / 1000.0;  // Apply attenuation ratio 1/2, convert mV to V
 }
