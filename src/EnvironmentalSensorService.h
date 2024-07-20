@@ -19,18 +19,36 @@ struct EnvironmentalSensor : Service::AirQualitySensor {
   }
 
   void updateReadings(float iaq, float vocEquivalent, float temp, float humid, float co2Equivalent) {
-    int airQualityValue;
-    if (iaq <= 50) airQualityValue = 1;      // Excellent
-    else if (iaq <= 100) airQualityValue = 2; // Good
-    else if (iaq <= 150) airQualityValue = 3; // Fair
-    else if (iaq <= 200) airQualityValue = 4; // Inferior
-    else airQualityValue = 5;                 // Poor
-
+    int airQualityValue = mapIAQtoAirQuality(iaq);
     airQuality->setVal(airQualityValue);
     voc->setVal(vocEquivalent);
     temperature->setVal(temp);
     humidity->setVal(humid);
     co2->setVal(co2Equivalent);
+
+    LOG1("Environmental Sensor Update:\n");
+    LOG1("  IAQ: ");
+    LOG1(iaq);
+    LOG1("\n  Air Quality: ");
+    LOG1(airQualityValue);
+    LOG1("\n  VOC: ");
+    LOG1(vocEquivalent);
+    LOG1(" ppb\n  Temperature: ");
+    LOG1(temp);
+    LOG1(" °C\n  Humidity: ");
+    LOG1(humid);
+    LOG1(" %\n  CO2: ");
+    LOG1(co2Equivalent);
+    LOG1(" ppm\n");
+  }
+
+private:
+  int mapIAQtoAirQuality(float iaq) {
+    if (iaq <= 50) return 1;      // Excellent
+    if (iaq <= 100) return 2;     // Good
+    if (iaq <= 150) return 3;     // Fair
+    if (iaq <= 200) return 4;     // Inferior
+    return 5;                     // Poor
   }
 };
 
